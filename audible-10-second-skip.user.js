@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Audible web player - 10 second skip
 // @namespace    https://github.com/VRJunkie1/audible-place-keeper
-// @version      1.3
+// @version      1.4
 // @description  Makes the skip buttons AND the arrow keys jump 10 seconds instead of 30 in the Audible web player.
 // @match        *://*.audible.com/*
 // @match        *://*.audible.co.uk/*
@@ -30,16 +30,21 @@
     //       <button id="container">
     //         <adbl-icon aria-label="Skip back 30 seconds" name="back-30">
     //
-    // document.querySelectorAll() does not descend into shadow roots, so
-    // versions 1.0 to 1.2 searched a tree the buttons are not in and found
-    // nothing, no matter how the labels were matched.
+    // document.querySelectorAll() does not descend into shadow roots. The
+    // data-testid and name attributes DO sit on the host, in ordinary DOM, so
+    // finding the buttons is easy - but the visible "30" and the aria-label
+    // are inside the shadow tree and have to be edited there.
     //
-    // Two things make this easy once you know:
-    //   - data-testid sits on the HOST element, in the ordinary DOM.
-    //   - the shadow root is open, so its contents can be reached and edited.
+    // The player is also a React app that renders its controls well after
+    // window.load, so nothing here may assume the buttons exist yet. Anything
+    // that checks once, too early, reports a false failure.
     // ------------------------------------------------------------------
 
-    const HOST_SELECTOR = '[data-testid="skip-back"], [data-testid="skip-forward"]';
+    const SELECTORS = [
+        '[data-testid="skip-back"], [data-testid="skip-forward"]',
+        'adbl-icon-button[name^="back-"], adbl-icon-button[name^="forward-"]',
+        '[name="back-30"], [name="forward-30"]'
+    ];
 
     function media() {
         const m = document.querySelector('audio, video');
@@ -54,15 +59,24 @@
         return true;
     }
 
-    function skipControls() {
-        return Array.from(document.querySelectorAll(HOST_SELECTOR)).map(function (el) {
-            const id = el.getAttribute('data-testid') || '';
-            return { el: el, delta: /back/.test(id) ? -SKIP_SECONDS : SKIP_SECONDS, why: id };
-        });
+    function classify(el) {
+        const s = ((el.getAttribute('data-testid') || '') + ' ' +
+                   (el.getAttribute('name') || '')).toLowerCase();
+        if (/back|rewind/.test(s)) return -SKIP_SECONDS;
+        if (/forward/.test(s))     return  SKIP_SECONDS;
+        return 0;
     }
 
-    // Walk an element's own shadow tree. Small and scoped - not a whole-page
-    // deep crawl.
+    function skipControls() {
+        for (const sel of SELECTORS) {
+            const hits = Array.from(document.querySelectorAll(sel))
+                .map(function (el) { return { el: el, delta: classify(el), why: sel }; })
+                .filter(function (c) { return c.delta !== 0; });
+            if (hits.length) return hits;
+        }
+        return [];
+    }
+
     function deepNodes(root, out) {
         out = out || [];
         (root.children ? Array.from(root.children) : []).forEach(function (c) {
@@ -74,9 +88,6 @@
     }
 
     // --- arrow keys -------------------------------------------------------
-    // Audible binds these to its own 30-second skip, so simply adding a
-    // listener would fire both and move 40 seconds. Capture phase gets the
-    // event first; stopImmediatePropagation means Audible never sees it.
     window.addEventListener('keydown', function (e) {
         if (e.altKey || e.ctrlKey || e.metaKey) return;
         const el = e.target;
@@ -95,8 +106,8 @@
     }, true);
 
     // --- the on-screen buttons -------------------------------------------
-    // A click that starts inside a shadow root still reports the host element
-    // in composedPath(), so this catches it without piercing anything.
+    // A click starting inside a shadow root still reports the host element in
+    // composedPath(), so this catches it without piercing anything.
     window.addEventListener('click', function (e) {
         const controls = skipControls();
         if (!controls.length) return;
@@ -113,7 +124,6 @@
     }, true);
 
     // --- make the buttons tell the truth ----------------------------------
-    // The visible "30" and the aria-label both live inside the shadow root.
     // Relabelling also keeps the place-keeper watcher in step: it reads the
     // number off the accessible name to work out how far one press moves.
     function relabel() {
@@ -133,27 +143,48 @@
         });
     }
 
-    // --- badge ------------------------------------------------------------
+    // --- badge that KEEPS LOOKING -----------------------------------------
+    // v1.3's badge checked once, two seconds after load, and went red because
+    // the controls had not rendered yet - reporting a failure that was really
+    // just impatience. This polls for 45 seconds and only calls it a failure
+    // if the buttons never turn up.
     function badge() {
         if (!SHOW_BADGE) return;
-        const c = skipControls();
         const d = document.createElement('div');
-        d.textContent = c.length
-            ? '10s skip active - buttons: ' + c.map(function (x) { return x.why; }).join(', ')
-            : '10s skip: arrows work, buttons NOT found';
         d.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:2147483647;max-width:90vw;' +
-            'background:' + (c.length ? '#1b5e20' : '#b71c1c') + ';color:#fff;' +
-            'font:13px system-ui;padding:6px 10px;border-radius:6px;opacity:.95';
+            'color:#fff;font:13px system-ui;padding:6px 10px;border-radius:6px;opacity:.95;' +
+            'background:#555';
+        d.textContent = '10s skip: looking for the buttons...';
         document.body.appendChild(d);
-        setTimeout(function () { d.remove(); }, 8000);
-        console.log('[10s skip] controls:', c);
+
+        let tries = 0;
+        const timer = setInterval(function () {
+            const c = skipControls();
+            tries++;
+            if (c.length) {
+                clearInterval(timer);
+                relabel();
+                d.style.background = '#1b5e20';
+                d.textContent = '10s skip active - found ' + c.length + ' buttons after ' + tries + 's';
+                console.log('[10s skip] controls:', c);
+                setTimeout(function () { d.remove(); }, 6000);
+            } else if (tries >= 45) {
+                clearInterval(timer);
+                d.style.background = '#b71c1c';
+                d.textContent = '10s skip: arrows work, buttons NOT found after 45s';
+                console.log('[10s skip] no controls. adbl elements present:',
+                    Array.from(document.querySelectorAll('adbl-icon-button, [data-testid]'))
+                         .map(function (e) {
+                             return e.tagName + ' testid=' + e.getAttribute('data-testid') +
+                                    ' name=' + e.getAttribute('name');
+                         }));
+                setTimeout(function () { d.remove(); }, 15000);
+            }
+        }, 1000);
     }
 
     new MutationObserver(relabel).observe(document.documentElement,
                                           { childList: true, subtree: true });
-    window.addEventListener('load', function () {
-        relabel();
-        setTimeout(badge, 2000);
-    });
+    window.addEventListener('load', function () { relabel(); badge(); });
     setInterval(relabel, 2000);
 })();
