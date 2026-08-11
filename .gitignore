@@ -1,0 +1,10 @@
+﻿# Data lives in %LOCALAPPDATA%\AudiblePlaceKeeper, not here - but ignore any
+# stray copies so listening history never lands in the repo.
+data/
+current.txt
+*.log
+*.tmp
+
+# Local convenience shortcuts - binary, contain this machine's name and user
+# account, and are useless to anyone else.
+*.lnk
