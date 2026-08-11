@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         Audible web player - 10 second skip
 // @namespace    https://github.com/VRJunkie1/audible-place-keeper
-// @version      1.4
+// @version      1.5
 // @description  Makes the skip buttons AND the arrow keys jump 10 seconds instead of 30 in the Audible web player.
 // @match        *://*.audible.com/*
 // @match        *://*.audible.co.uk/*
@@ -19,6 +19,8 @@
     // ------------------------------------------------------------------
     const SKIP_SECONDS = 10;
     const SHOW_BADGE   = true;
+    const VERSION      = '1.5';   // shown on the badge, so you can always tell
+                                  // which copy of the script is actually running
 
     // ------------------------------------------------------------------
     // WHY THIS LOOKS THE WAY IT DOES
@@ -154,7 +156,7 @@
         d.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:2147483647;max-width:90vw;' +
             'color:#fff;font:13px system-ui;padding:6px 10px;border-radius:6px;opacity:.95;' +
             'background:#555';
-        d.textContent = '10s skip: looking for the buttons...';
+        d.textContent = 'v' + VERSION + ' - looking for the buttons...';
         document.body.appendChild(d);
 
         let tries = 0;
@@ -165,13 +167,13 @@
                 clearInterval(timer);
                 relabel();
                 d.style.background = '#1b5e20';
-                d.textContent = '10s skip active - found ' + c.length + ' buttons after ' + tries + 's';
+                d.textContent = 'v' + VERSION + ' ACTIVE - found ' + c.length + ' buttons after ' + tries + 's';
                 console.log('[10s skip] controls:', c);
                 setTimeout(function () { d.remove(); }, 6000);
             } else if (tries >= 45) {
                 clearInterval(timer);
                 d.style.background = '#b71c1c';
-                d.textContent = '10s skip: arrows work, buttons NOT found after 45s';
+                d.textContent = 'v' + VERSION + ' - arrows work, buttons NOT found after 45s';
                 console.log('[10s skip] no controls. adbl elements present:',
                     Array.from(document.querySelectorAll('adbl-icon-button, [data-testid]'))
                          .map(function (e) {
@@ -188,3 +190,4 @@
     window.addEventListener('load', function () { relabel(); badge(); });
     setInterval(relabel, 2000);
 })();
+
