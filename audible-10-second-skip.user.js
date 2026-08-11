@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Audible web player - 10 second skip
 // @namespace    https://github.com/VRJunkie1/audible-place-keeper
-// @version      1.1
+// @version      1.2
 // @description  Makes the skip buttons AND the arrow keys jump 10 seconds instead of 30 in the Audible web player.
 // @match        *://*.audible.com/*
 // @match        *://*.audible.co.uk/*
@@ -33,49 +33,80 @@
         return true;
     }
 
-    // Find the skip buttons WITHOUT assuming they carry an aria-label. v1.0
-    // assumed that and found nothing. Look at every label-ish source a button
-    // might use, plus the digits drawn inside the icon.
-    function describe(el) {
-        const bits = [
-            el.getAttribute('aria-label'),
-            el.getAttribute('title'),
-            el.getAttribute('data-testid'),
-            el.getAttribute('name'),
-            el.className && el.className.baseVal !== undefined
-                ? el.className.baseVal : el.className,
-            el.textContent
-        ];
-        const labelledBy = el.getAttribute('aria-labelledby');
-        if (labelledBy) {
-            labelledBy.split(/\s+/).forEach(function (id) {
-                const t = document.getElementById(id);
-                if (t) bits.push(t.textContent);
-            });
+    // ------------------------------------------------------------------
+    // Finding the buttons.
+    //
+    // v1.0 looked for [aria-label*="Skip"] and found nothing. v1.1 checked
+    // more attributes but still only ON button/a/[role=button] elements, and
+    // still found nothing - so the label is not on the clickable element.
+    //
+    // v1.2 inverts it: find the LABEL anywhere in the document, then walk UP
+    // to whatever clickable thing contains it. That works whether the label
+    // is an aria-label, a title, an SVG <title>, or visually-hidden text in a
+    // nested span.
+    // ------------------------------------------------------------------
+    const LABEL_RE = /skip\s*(back|backward|forward|rewind)|(?:back|forward)\s*\d+\s*sec/i;
+
+    function clickableAncestor(el) {
+        let n = el;
+        for (let i = 0; n && i < 8; i++, n = n.parentElement) {
+            if (!n.tagName) continue;
+            if (/^(BUTTON|A)$/.test(n.tagName)) return n;
+            if (n.getAttribute && n.getAttribute('role') === 'button') return n;
+            if (n.hasAttribute && n.hasAttribute('tabindex')) return n;
+            try {
+                if (getComputedStyle(n).cursor === 'pointer') return n;
+            } catch (e) { /* ignore */ }
         }
-        return bits.filter(Boolean).join(' ').toLowerCase();
+        return null;
     }
 
-    function skipButtons() {
-        const out = [];
-        document.querySelectorAll('button, [role="button"], a').forEach(function (el) {
-            const d = describe(el);
-            if (!/skip|forward|back|rewind/.test(d)) return;
-            if (/chapter|section|speed|bookmark/.test(d)) return;   // not these
-            const back = /back|rewind/.test(d);
-            const fwd  = /forward/.test(d);
-            if (back || fwd) out.push({ el: el, delta: back ? -SKIP_SECONDS : SKIP_SECONDS, desc: d });
+    function skipControls() {
+        const found = new Map();
+
+        // 1. anything whose label text mentions skipping
+        document.querySelectorAll('*').forEach(function (el) {
+            if (el.children.length > 3) return;          // keep it to leaf-ish nodes
+            const txt = [
+                el.getAttribute && el.getAttribute('aria-label'),
+                el.getAttribute && el.getAttribute('title'),
+                el.tagName === 'title' ? el.textContent : null,
+                el.childElementCount === 0 ? el.textContent : null
+            ].filter(Boolean).join(' ');
+            if (!txt || !LABEL_RE.test(txt)) return;
+            if (/chapter|section|speed|bookmark/i.test(txt)) return;
+
+            const btn = clickableAncestor(el);
+            if (!btn || found.has(btn)) return;
+            const back = /back|rewind/i.test(txt);
+            found.set(btn, { el: btn, delta: back ? -SKIP_SECONDS : SKIP_SECONDS, why: txt.trim().slice(0, 40) });
         });
-        return out;
+
+        if (found.size) return Array.from(found.values());
+
+        // 2. Fallback: the number drawn inside the circular arrows. The two
+        //    skip controls sit either side of Play, so in DOM order the first
+        //    is back and the second is forward.
+        const digits = [];
+        document.querySelectorAll('text, tspan, span, div').forEach(function (el) {
+            if (el.childElementCount !== 0) return;
+            if (!/^\s*\d{1,3}\s*$/.test(el.textContent)) return;
+            const btn = clickableAncestor(el);
+            if (btn && digits.indexOf(btn) === -1) digits.push(btn);
+        });
+        if (digits.length === 2) {
+            return [
+                { el: digits[0], delta: -SKIP_SECONDS, why: 'digit-fallback (first)' },
+                { el: digits[1], delta:  SKIP_SECONDS, why: 'digit-fallback (second)' }
+            ];
+        }
+        return [];
     }
 
     // --- arrow keys -------------------------------------------------------
-    // Audible binds these to its OWN 30-second skip, so simply adding a
-    // listener would fire both and move 40 seconds. Capture phase gets us the
+    // Audible binds these to its own 30-second skip, so simply adding a
+    // listener would fire both and move 40 seconds. Capture phase gets the
     // event first; stopImmediatePropagation means Audible never sees it.
-    // NOTE: this path does not depend on finding any button, so if the arrows
-    // work and the buttons do not, the script is running and only the button
-    // detection is wrong.
     window.addEventListener('keydown', function (e) {
         if (e.altKey || e.ctrlKey || e.metaKey) return;
         const el = e.target;
@@ -95,18 +126,13 @@
 
     // --- the on-screen buttons -------------------------------------------
     window.addEventListener('click', function (e) {
+        const controls = skipControls();
+        if (!controls.length) return;
         const path = e.composedPath ? e.composedPath() : [e.target];
         for (const node of path) {
-            if (!node || node.nodeType !== 1) continue;
-            if (!/^(BUTTON|A)$/.test(node.tagName) &&
-                node.getAttribute && node.getAttribute('role') !== 'button') continue;
-            const d = describe(node);
-            if (/chapter|section|speed|bookmark/.test(d)) return;
-            let delta = 0;
-            if (/back|rewind/.test(d))    delta = -SKIP_SECONDS;
-            else if (/forward/.test(d))   delta =  SKIP_SECONDS;
-            if (!delta) continue;
-            if (seek(delta)) {
+            const hit = controls.find(function (c) { return c.el === node; });
+            if (!hit) continue;
+            if (seek(hit.delta)) {
                 e.preventDefault();
                 e.stopImmediatePropagation();
             }
@@ -118,38 +144,56 @@
     // Also keeps the place-keeper watcher in step: it reads the number off the
     // button label to work out how far one press moves.
     function relabel() {
-        skipButtons().forEach(function (b) {
-            const l = b.el.getAttribute('aria-label');
+        skipControls().forEach(function (c) {
+            const l = c.el.getAttribute && c.el.getAttribute('aria-label');
             if (l) {
                 const n = l.replace(/\b\d+\s*seconds?\b/i, SKIP_SECONDS + ' seconds');
-                if (n !== l) b.el.setAttribute('aria-label', n);
+                if (n !== l) c.el.setAttribute('aria-label', n);
             }
-            b.el.querySelectorAll('text, tspan, span, div').forEach(function (t) {
-                if (t.children.length === 0 && /^\s*\d{1,3}\s*$/.test(t.textContent)) {
+            c.el.querySelectorAll('text, tspan, span, div').forEach(function (t) {
+                if (t.childElementCount === 0 && /^\s*\d{1,3}\s*$/.test(t.textContent)) {
                     t.textContent = String(SKIP_SECONDS);
                 }
             });
         });
     }
 
-    // --- one-off badge so you can see whether it loaded and what it found --
+    // --- badge, so it reports rather than failing silently -----------------
     function badge() {
         if (!SHOW_BADGE) return;
-        const n = skipButtons().length;
+        const c = skipControls();
         const d = document.createElement('div');
-        d.textContent = '10s skip active - found ' + n + ' skip button(s)';
-        d.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:2147483647;' +
-            'background:' + (n ? '#1b5e20' : '#b71c1c') + ';color:#fff;' +
+        d.textContent = c.length
+            ? '10s skip active - ' + c.length + ' button(s): ' + c.map(function (x) { return x.why; }).join(' | ')
+            : '10s skip: arrows work, buttons NOT found';
+        d.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:2147483647;max-width:90vw;' +
+            'background:' + (c.length ? '#1b5e20' : '#b71c1c') + ';color:#fff;' +
             'font:13px system-ui;padding:6px 10px;border-radius:6px;opacity:.95';
         document.body.appendChild(d);
-        setTimeout(function () { d.remove(); }, 6000);
+        setTimeout(function () { d.remove(); }, 8000);
+
+        // Deeper detail for the console (F12), if the buttons still elude us.
+        console.log('[10s skip] controls found:', c);
+        if (!c.length) {
+            const near = [];
+            document.querySelectorAll('button,[role="button"],a,[tabindex]').forEach(function (b) {
+                near.push({
+                    tag: b.tagName,
+                    aria: b.getAttribute('aria-label'),
+                    title: b.getAttribute('title'),
+                    cls: (b.className && b.className.baseVal !== undefined ? b.className.baseVal : b.className),
+                    text: (b.textContent || '').trim().slice(0, 30)
+                });
+            });
+            console.log('[10s skip] clickable elements on the page:', near);
+        }
     }
 
     new MutationObserver(relabel).observe(document.documentElement,
                                           { childList: true, subtree: true });
     window.addEventListener('load', function () {
         relabel();
-        setTimeout(badge, 1500);
+        setTimeout(badge, 2000);
     });
     setInterval(relabel, 2000);
 })();
