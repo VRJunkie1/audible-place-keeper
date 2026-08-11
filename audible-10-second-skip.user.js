@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         Audible web player - 10 second skip
 // @namespace    https://github.com/VRJunkie1/audible-place-keeper
-// @version      1.5
+// @version      1.6
 // @description  Makes the skip buttons AND the arrow keys jump 10 seconds instead of 30 in the Audible web player.
 // @match        *://*.audible.com/*
 // @match        *://*.audible.co.uk/*
@@ -19,7 +19,7 @@
     // ------------------------------------------------------------------
     const SKIP_SECONDS = 10;
     const SHOW_BADGE   = true;
-    const VERSION      = '1.5';   // shown on the badge, so you can always tell
+    const VERSION      = '1.6';   // shown on the badge, so you can always tell
                                   // which copy of the script is actually running
 
     // ------------------------------------------------------------------
@@ -79,13 +79,23 @@
         return [];
     }
 
-    function deepNodes(root, out) {
+    // Collect every node under a host, INCLUDING its own shadow tree.
+    //
+    // The bug this fixes: the previous version descended into the shadow root
+    // of each CHILD, but never into the host's own shadowRoot - which is where
+    // the aria-label actually lives. So it walked an empty light-DOM tree and
+    // relabelled nothing, silently.
+    function deepNodes(host, out) {
         out = out || [];
-        (root.children ? Array.from(root.children) : []).forEach(function (c) {
-            out.push(c);
-            if (c.shadowRoot) deepNodes(c.shadowRoot, out);
-            deepNodes(c, out);
-        });
+        function walk(root) {
+            (root.children ? Array.from(root.children) : []).forEach(function (c) {
+                out.push(c);
+                if (c.shadowRoot) walk(c.shadowRoot);
+                walk(c);
+            });
+        }
+        if (host.shadowRoot) walk(host.shadowRoot);
+        walk(host);
         return out;
     }
 
@@ -190,4 +200,5 @@
     window.addEventListener('load', function () { relabel(); badge(); });
     setInterval(relabel, 2000);
 })();
+
 
